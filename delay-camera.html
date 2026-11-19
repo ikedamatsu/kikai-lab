@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>遅延カメラ（単体版）</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap" rel="stylesheet">
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['"Zen Maru Gothic"', '"Hiragino Maru Gothic ProN"', 'system-ui', 'sans-serif'] },
+        colors: { mat: { 50: '#eef4fb', 100: '#d9e6f5', 600: '#2a62ab', 700: '#1f4e8c', 900: '#14305a' }, tape: '#ffd23f' }
+      }
+    }
+  };
+</script>
+<style>
+  /* 体育館のマットの青と、方眼ノート（実験ノート）の組み合わせ */
+  body {
+    background-color: #fbfbf7;
+    background-image:
+      linear-gradient(rgba(31, 78, 140, .07) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(31, 78, 140, .07) 1px, transparent 1px);
+    background-size: 24px 24px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .press { transition: transform .08s ease; }
+  .press:active { transform: scale(.97); }
+  .step-in { animation: stepIn .26s ease-out both; }
+  @keyframes stepIn { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+  .open-down { animation: openDown .24s ease-out both; }
+  @keyframes openDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+  .pop { animation: pop .2s ease-out both; }
+  @keyframes pop { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+  .spinner { width: 56px; height: 56px; border: 7px solid #d9e6f5; border-top-color: #1f4e8c; border-radius: 50%; animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 4px solid #ffd23f; outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .press, .step-in, .open-down, .pop { animation: none; transition: none; }
+    .spinner { animation-duration: 2.4s; }
+  }
+</style>
+</head>
+<body class="font-sans text-slate-800 min-h-screen">
+<main class="max-w-2xl mx-auto px-4 py-10">
+  <div class="bg-white rounded-3xl border-2 border-mat-100 p-8 text-center">
+    <p class="text-6xl">🎥</p>
+    <h1 class="mt-3 text-3xl font-black">遅延カメラ</h1>
+    <p class="mt-3 text-lg font-bold text-slate-600 leading-relaxed">カメラの映像を、数秒おくれて映します。<br>技を終えてから画面を見に行くと、自分の動きを見られます。</p>
+    <p class="mt-2 text-base font-bold text-slate-500">映像は保存も送信もされません。</p>
+    <p class="mt-1 text-base font-bold text-slate-500">使いおわったら、このタブをとじて記録アプリにもどろう。</p>
+    <button onclick="CAM.open()" class="press mt-6 w-full rounded-2xl bg-mat-700 text-white py-5 text-2xl font-black">カメラをはじめる</button>
+  </div>
+</main>
+<!-- 遅延カメラ（全画面） -->
+<div id="cam" class="hidden fixed inset-0 z-[60] bg-black text-white flex flex-col select-none" role="dialog" aria-modal="true" aria-label="遅延カメラ">
+  <!-- 上のバー -->
+  <div class="flex items-center gap-3 px-3 py-2 bg-black/80">
+    <span class="text-xl font-black">🎥 遅延カメラ</span>
+    <span id="camBadge" class="rounded-full bg-red-600 px-3 py-1 text-base font-black">● 10秒前の映像</span>
+    <span class="hidden sm:inline text-sm font-bold text-white/60">映像は保存も送信もされません</span>
+    <span class="grow"></span>
+    <button id="camFsBtn" onclick="CAM.toggleFullscreen()" class="press hidden rounded-2xl bg-white/15 px-4 py-3 text-lg font-black">⛶ 全画面</button>
+    <button onclick="CAM.close()" class="press rounded-2xl bg-white text-slate-900 px-5 py-3 text-lg font-black">✕ とじる</button>
+  </div>
+
+  <!-- 映像 -->
+  <div class="relative grow min-h-0 flex items-center justify-center">
+    <canvas id="camView" class="w-full h-full object-contain"></canvas>
+
+    <!-- 向き合わせ用の小窓（いまの映像） -->
+    <div id="camLiveBox" class="absolute right-3 bottom-3 w-40 sm:w-56 rounded-xl overflow-hidden border-2 border-white/70 bg-black">
+      <video id="camVideo" class="block w-full" playsinline muted></video>
+      <p class="bg-black/70 px-2 py-1 text-xs font-bold">いまの映像（向き合わせ用）</p>
+    </div>
+
+    <!-- 準備中・エラーのメッセージ -->
+    <div id="camMsg" class="absolute inset-0 hidden flex-col items-center justify-center text-center px-6 bg-black/70"></div>
+
+    <!-- 一時停止中の表示 -->
+    <div id="camPauseTag" class="hidden absolute left-3 top-3 rounded-2xl bg-tape text-slate-900 px-4 py-2 text-lg font-black"></div>
+  </div>
+
+  <!-- 下の操作バー -->
+  <div class="bg-black/85 px-3 py-3">
+    <div id="camStepRow" class="hidden mb-3 grid grid-cols-4 gap-2">
+      <button onclick="CAM.step(-8)" class="press rounded-2xl bg-white/15 py-3 text-lg font-black">◀◀ 0.5秒</button>
+      <button onclick="CAM.step(-1)" class="press rounded-2xl bg-white/15 py-3 text-lg font-black">◀ 1コマ</button>
+      <button onclick="CAM.step(1)" class="press rounded-2xl bg-white/15 py-3 text-lg font-black">1コマ ▶</button>
+      <button onclick="CAM.step(8)" class="press rounded-2xl bg-white/15 py-3 text-lg font-black">0.5秒 ▶▶</button>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="flex rounded-2xl bg-white/10 p-1" role="group" aria-label="遅らせる時間">
+        <button data-delay="5" onclick="CAM.setDelay(5)" class="camDelay press rounded-xl px-4 py-3 text-lg font-black">5秒</button>
+        <button data-delay="10" onclick="CAM.setDelay(10)" class="camDelay press rounded-xl px-4 py-3 text-lg font-black">10秒</button>
+        <button data-delay="15" onclick="CAM.setDelay(15)" class="camDelay press rounded-xl px-4 py-3 text-lg font-black">15秒</button>
+      </div>
+      <button id="camPauseBtn" onclick="CAM.togglePause()" class="press grow sm:grow-0 sm:min-w-[11rem] rounded-2xl bg-tape text-slate-900 px-5 py-3 text-xl font-black">⏸️ 一時停止</button>
+      <button id="camMirrorBtn" onclick="CAM.toggleMirror()" class="press rounded-2xl bg-white/15 px-4 py-3 text-lg font-black">↔ 左右反転</button>
+      <button id="camLiveBtn" onclick="CAM.toggleLive()" class="press rounded-2xl bg-white/15 px-4 py-3 text-lg font-black">小窓</button>
+      <button id="camSwitchBtn" onclick="CAM.switchCamera()" class="press hidden rounded-2xl bg-white/15 px-4 py-3 text-lg font-black">🔄 カメラ切りかえ</button>
+    </div>
+  </div>
+</div>
+<script>
+// ═════════════════════════ 遅延カメラ ═════════════════════════
+// しくみ：カメラの映像を1秒に15コマ、小さなJPEG画像にして端末のメモリにためる。
+// 表示するときは「いまから○秒前」のコマをさがして映す。録画ファイルは作らず、どこにも送信しない。
+const CAM = (() => {
+  const FPS = 15;               // 1秒にためるコマ数（Chromebookでも重くならない数）
+  const MAX_W = 640;            // ためる画像の横幅（px）
+  const QUALITY = 0.72;         // JPEGの画質
+  const MAX_DELAY = 15;         // いちばん長い遅れ（秒）
+  const KEEP_MS = (MAX_DELAY + 1) * 1000;
+  const PAUSE_CAP = FPS * 90;   // 一時停止中にためておく上限（約90秒ぶん）
+  const STEP_FRAMES = 8;        // 「0.5秒」ボタンで動くコマ数（15コマ/秒で約0.5秒）
+
+  const $c = id => document.getElementById(id);
+  const st = {
+    open: false, running: false, stream: null,
+    delay: 10, mirror: true, showLive: true,
+    frames: [],                 // { t: 撮った時刻(ms), b: JPEGのBlob }
+    startT: 0, timer: null, raf: 0, encoding: false,
+    shown: null,                // いま画面に出ているコマ
+    want: null, decoding: false,
+    paused: false, pIdx: -1, pBaseT: 0,
+    devices: [], deviceId: '',
+    wakeLock: null, onClose: null
+  };
+  let cap = null, capCtx = null, view = null, viewCtx = null;
+
+  function els() {
+    if (view) return;
+    view = $c('camView');
+    viewCtx = view.getContext('2d');
+    cap = document.createElement('canvas');
+    capCtx = cap.getContext('2d');
+  }
+
+  // ───── 画面の文字 ─────
+  function msg(html) {
+    const m = $c('camMsg');
+    if (!html) { m.classList.add('hidden'); m.classList.remove('flex'); m.innerHTML = ''; return; }
+    m.innerHTML = html;
+    m.classList.remove('hidden'); m.classList.add('flex');
+  }
+  function countdownHtml(sec) {
+    return `<p class="text-2xl font-black text-white/80">準備中…</p>
+      <p class="mt-2 font-black leading-none" style="font-size:min(32vw,12rem)">${sec}</p>
+      <p class="mt-2 text-2xl font-black">秒後に、${st.delay}秒前の映像が映ります</p>
+      <p class="mt-4 text-lg font-bold text-white/70">右下の小窓を見て、全身が入るようにカメラの向きを合わせよう</p>`;
+  }
+  function errorHtml(title, body) {
+    return `<p class="text-5xl">⚠️</p>
+      <p class="mt-3 text-2xl font-black">${title}</p>
+      <p class="mt-3 max-w-2xl text-lg font-bold leading-relaxed text-white/85">${body}</p>
+      <div class="mt-5 flex flex-wrap justify-center gap-3">
+        <button onclick="CAM.retry()" class="press rounded-2xl bg-tape text-slate-900 px-6 py-4 text-xl font-black">もう一度ためす</button>
+        <button onclick="CAM.close()" class="press rounded-2xl bg-white/15 px-6 py-4 text-xl font-black">とじる</button>
+      </div>`;
+  }
+
+  function syncButtons() {
+    document.querySelectorAll('.camDelay').forEach(b => {
+      const on = Number(b.dataset.delay) === st.delay;
+      b.className = 'camDelay press rounded-xl px-4 py-3 text-lg font-black ' + (on ? 'bg-white text-slate-900' : 'text-white');
+      b.setAttribute('aria-pressed', String(on));
+    });
+    $c('camBadge').textContent = st.paused ? '⏸️ 一時停止中' : `● ${st.delay}秒前の映像`;
+    $c('camBadge').className = 'rounded-full px-3 py-1 text-base font-black ' + (st.paused ? 'bg-tape text-slate-900' : 'bg-red-600 text-white');
+    $c('camPauseBtn').textContent = st.paused ? '▶ 再開する' : '⏸️ 一時停止';
+    $c('camStepRow').classList.toggle('hidden', !st.paused);
+    $c('camPauseTag').classList.toggle('hidden', !st.paused);
+    $c('camMirrorBtn').className = 'press rounded-2xl px-4 py-3 text-lg font-black ' + (st.mirror ? 'bg-white text-slate-900' : 'bg-white/15 text-white');
+    $c('camMirrorBtn').textContent = st.mirror ? '↔ 左右反転：ON' : '↔ 左右反転：OFF';
+    $c('camLiveBtn').textContent = st.showLive ? '小窓をかくす' : '小窓を出す';
+    $c('camLiveBox').classList.toggle('hidden', !st.showLive);
+    const flip = st.mirror ? 'scaleX(-1)' : 'none';
+    view.style.transform = flip;
+    $c('camVideo').style.transform = flip;
+    $c('camSwitchBtn').classList.toggle('hidden', st.devices.length < 2);
+    $c('camFsBtn').classList.toggle('hidden', !document.fullscreenEnabled);
+    if (document.fullscreenEnabled) $c('camFsBtn').textContent = document.fullscreenElement ? '⛶ 全画面をやめる' : '⛶ 全画面';
+    if (st.paused) updatePauseTag();
+  }
+
+  // ───── カメラを起動する ─────
+  async function start(deviceId) {
+    stopStream();
+    st.frames = []; st.shown = null; st.want = null;
+    st.paused = false; st.pIdx = -1;
+    viewCtx && viewCtx.clearRect(0, 0, view.width, view.height);
+    msg(`<p class="text-2xl font-black">カメラを起動しています…</p>
+      <p class="mt-3 text-lg font-bold text-white/75">「カメラの使用を許可しますか？」と出たら「許可」をおしてね</p>`);
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      msg(errorHtml('この画面ではカメラを使えません', 'ブラウザがカメラに対応していないか、安全な接続（https）で開かれていません。先生に知らせてください。'));
+      return;
+    }
+    if (document.featurePolicy && typeof document.featurePolicy.allowsFeature === 'function' &&
+        document.featurePolicy.allowsFeature('camera') === false) {
+      msg(errorHtml('このページの中ではカメラを使えない設定です', '先生へ：アプリの枠の中でカメラが制限されています。「遅延カメラ単体版」のファイルを使ってください。'));
+      return;
+    }
+
+    const video = deviceId
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+      : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+    try {
+      st.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    } catch (e) {
+      st.stream = null;
+      showCameraError(e);
+      return;
+    }
+    if (!st.open) { stopStream(); return; } // 起動中にとじられた
+
+    const v = $c('camVideo');
+    v.srcObject = st.stream;
+    try { await v.play(); } catch (e) { /* 自動再生の制限。loadeddataで続ける */ }
+    await new Promise(res => { if (v.readyState >= 2) res(); else v.addEventListener('loadeddata', res, { once: true }); });
+
+    const vw = v.videoWidth || 640, vh = v.videoHeight || 480;
+    const scale = Math.min(1, MAX_W / vw);
+    cap.width = view.width = Math.round(vw * scale);
+    cap.height = view.height = Math.round(vh * scale);
+
+    const track = st.stream.getVideoTracks()[0];
+    st.deviceId = (track && track.getSettings && track.getSettings().deviceId) || deviceId || '';
+    track && track.addEventListener('ended', () => {
+      if (st.open) msg(errorHtml('カメラが止まりました', 'ほかのアプリがカメラを使い始めたか、カメラが外れた可能性があります。'));
+      st.running = false;
+    });
+
+    st.running = true;
+    st.startT = performance.now();
+    st.timer = setInterval(capture, Math.round(1000 / FPS));
+    loop();
+    listDevices();
+    keepAwake();
+    syncButtons();
+  }
+
+  function showCameraError(e) {
+    const name = e && e.name;
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      msg(errorHtml('カメラの使用が許可されていません',
+        'アドレスバーの右はしにあるカメラのマークをタップして「許可」にしてから、「もう一度ためす」をおしてね。<br>それでも映らないときは、先生に知らせてください（先生へ：「遅延カメラ単体版」を使うと動く場合があります）。'));
+    } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      msg(errorHtml('カメラが見つかりません', 'この端末にカメラがないか、カメラがオフになっています。'));
+    } else if (name === 'NotReadableError' || name === 'AbortError') {
+      msg(errorHtml('カメラを使えませんでした', 'ほかのアプリやタブ（Google Meet など）がカメラを使っていないか確認して、とじてからもう一度ためしてね。'));
+    } else {
+      msg(errorHtml('カメラを起動できませんでした', String((e && e.message) || e || '')));
+    }
+  }
+
+  async function listDevices() {
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      st.devices = list.filter(d => d.kind === 'videoinput');
+    } catch (e) { st.devices = []; }
+    syncButtons();
+  }
+
+  // ───── コマをためる ─────
+  function capture() {
+    if (!st.running || st.encoding) return; // 前のコマの変換が終わっていなければ1回休む
+    const v = $c('camVideo');
+    if (v.readyState < 2) return;
+    const t = performance.now();
+    capCtx.drawImage(v, 0, 0, cap.width, cap.height);
+    st.encoding = true;
+    cap.toBlob(b => {
+      st.encoding = false;
+      if (!st.running || !b) return;
+      st.frames.push({ t, b });
+      prune();
+    }, 'image/jpeg', QUALITY);
+  }
+
+  function prune() {
+    const f = st.frames;
+    let drop = 0;
+    if (st.paused) {
+      if (f.length > PAUSE_CAP) drop = f.length - PAUSE_CAP;
+    } else {
+      const limit = performance.now() - KEEP_MS;
+      while (drop < f.length - 1 && f[drop].t < limit) drop++;
+    }
+    if (drop > 0) {
+      f.splice(0, drop);
+      if (st.pIdx >= 0) st.pIdx = Math.max(0, st.pIdx - drop);
+    }
+  }
+
+  // ───── 表示 ─────
+  function loop() {
+    cancelAnimationFrame(st.raf);
+    const tick = () => {
+      if (!st.running) return;
+      if (!st.paused) {
+        const now = performance.now();
+        const target = now - st.delay * 1000;
+        const f = st.frames;
+        let i = -1;
+        for (let k = f.length - 1; k >= 0; k--) { if (f[k].t <= target) { i = k; break; } }
+        if (i < 0) {
+          // まだ○秒ぶんたまっていない
+          const oldest = f.length ? f[0].t : st.startT;
+          const remain = Math.max(1, Math.ceil((oldest + st.delay * 1000 - now) / 1000));
+          const html = countdownHtml(remain);
+          if ($c('camMsg').dataset.k !== 'cd' + remain + '-' + st.delay) {
+            msg(html);
+            $c('camMsg').dataset.k = 'cd' + remain + '-' + st.delay;
+          }
+        } else {
+          if ($c('camMsg').dataset.k) { msg(''); $c('camMsg').dataset.k = ''; }
+          show(f[i]);
+        }
+      }
+      st.raf = requestAnimationFrame(tick);
+    };
+    st.raf = requestAnimationFrame(tick);
+  }
+
+  function show(frame) {
+    if (!frame || frame === st.shown) return;
+    st.want = frame;
+    if (st.decoding) return;
+    st.decoding = true;
+    const target = frame;
+    createImageBitmap(target.b).then(bmp => {
+      st.decoding = false;
+      if (st.running) {
+        viewCtx.drawImage(bmp, 0, 0, view.width, view.height);
+        st.shown = target;
+      }
+      bmp.close && bmp.close();
+      if (st.want && st.want !== st.shown) show(st.want);
+    }).catch(() => { st.decoding = false; });
+  }
+
+  // ───── 一時停止・コマ送り ─────
+  function updatePauseTag() {
+    const f = st.frames[st.pIdx];
+    if (!f) { $c('camPauseTag').textContent = '一時停止中'; return; }
+    const d = (f.t - st.pBaseT) / 1000;
+    const rel = Math.abs(d) < 0.05 ? '止めた場面' : (d > 0 ? `止めた場面から ${d.toFixed(1)}秒あと` : `止めた場面から ${(-d).toFixed(1)}秒まえ`);
+    $c('camPauseTag').textContent = '⏸️ ' + rel;
+  }
+
+  function togglePause() {
+    if (!st.running) return;
+    if (!st.paused) {
+      const idx = st.shown ? st.frames.indexOf(st.shown) : -1;
+      if (idx < 0) return; // まだ映っていない
+      st.paused = true;
+      st.pIdx = idx;
+      st.pBaseT = st.frames[idx].t;
+    } else {
+      st.paused = false;
+      st.pIdx = -1;
+      prune();
+    }
+    syncButtons();
+  }
+
+  function step(n) {
+    if (!st.paused || !st.frames.length) return;
+    st.pIdx = Math.max(0, Math.min(st.frames.length - 1, st.pIdx + n));
+    show(st.frames[st.pIdx]);
+    updatePauseTag();
+  }
+
+  // ───── そのほかの操作 ─────
+  function setDelay(sec) {
+    st.delay = sec;
+    if (st.paused) { st.paused = false; st.pIdx = -1; prune(); }
+    $c('camMsg').dataset.k = '';
+    syncButtons();
+  }
+  function toggleMirror() { st.mirror = !st.mirror; syncButtons(); }
+  function toggleLive() { st.showLive = !st.showLive; syncButtons(); }
+
+  function switchCamera() {
+    if (st.devices.length < 2) return;
+    const i = st.devices.findIndex(d => d.deviceId === st.deviceId);
+    const next = st.devices[(i + 1) % st.devices.length];
+    start(next.deviceId);
+  }
+
+  function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else $c('cam').requestFullscreen().catch(() => {});
+    } catch (e) { /* 使えない環境では何もしない */ }
+  }
+
+  // 画面が自動で暗くならないようにする（使えない環境では何もしない）
+  async function keepAwake() {
+    try {
+      if ('wakeLock' in navigator && !st.wakeLock) {
+        st.wakeLock = await navigator.wakeLock.request('screen');
+        st.wakeLock.addEventListener('release', () => { st.wakeLock = null; });
+      }
+    } catch (e) { st.wakeLock = null; }
+  }
+
+  function stopStream() {
+    st.running = false;
+    clearInterval(st.timer); st.timer = null;
+    cancelAnimationFrame(st.raf);
+    if (st.stream) st.stream.getTracks().forEach(t => t.stop());
+    st.stream = null;
+    st.encoding = false; st.decoding = false;
+    const v = $c('camVideo');
+    if (v) v.srcObject = null;
+  }
+
+  function open() {
+    els();
+    st.open = true;
+    $c('cam').classList.remove('hidden');
+    syncButtons();
+    start(st.deviceId || '');
+  }
+
+  function close() {
+    if (!st.open) return;
+    st.open = false;
+    stopStream();
+    st.frames = []; st.shown = null; st.want = null; st.paused = false; st.pIdx = -1;
+    msg('');
+    $c('camMsg').dataset.k = '';
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) { /* 何もしない */ }
+    if (st.wakeLock) { st.wakeLock.release().catch(() => {}); st.wakeLock = null; }
+    $c('cam').classList.add('hidden');
+    if (typeof st.onClose === 'function') st.onClose();
+  }
+
+  function retry() { start(st.deviceId || ''); }
+
+  document.addEventListener('visibilitychange', () => {
+    if (st.open && document.visibilityState === 'visible') keepAwake();
+  });
+  document.addEventListener('fullscreenchange', () => { if (st.open) syncButtons(); });
+  document.addEventListener('keydown', ev => {
+    if (!st.open) return;
+    if (ev.key === 'Escape' && !document.fullscreenElement) { close(); }
+    else if (ev.key === ' ') { ev.preventDefault(); togglePause(); }
+    else if (ev.key === 'ArrowLeft') { ev.preventDefault(); step(ev.shiftKey ? -STEP_FRAMES : -1); }
+    else if (ev.key === 'ArrowRight') { ev.preventDefault(); step(ev.shiftKey ? STEP_FRAMES : 1); }
+  });
+
+  return {
+    open, close, retry, setDelay, togglePause, step, toggleMirror, toggleLive, switchCamera, toggleFullscreen,
+    set onClose(fn) { st.onClose = fn; },
+    _state: st
+  };
+})();
+
+</script>
+</body>
+</html>
