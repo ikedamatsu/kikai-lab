@@ -196,14 +196,16 @@ const CAM = (() => {
     repBtn.textContent = st.repeating ? '⏹️ くりかえし終了' : `🔁 ${REPEAT_SEC}秒前をくりかえす`;
 
     $c('camStepRow').classList.toggle('hidden', !st.paused);
-    $c('camPauseTag').classList.toggle('hidden', !st.paused && !st.repeating);$c('camMirrorBtn').className = 'press rounded-2xl px-4 py-3 text-lg font-black ' + (st.mirror ? 'bg-white text-slate-900' : 'bg-white/15 text-white');
+    $c('camPauseTag').classList.toggle('hidden', !st.paused && !st.repeating);
+    $c('camMirrorBtn').className = 'press rounded-2xl px-4 py-3 text-lg font-black ' + (st.mirror ? 'bg-white text-slate-900' : 'bg-white/15 text-white');
     $c('camMirrorBtn').textContent = st.mirror ? '↔ 左右反転：ON' : '↔ 左右反転：OFF';
     $c('camLiveBtn').textContent = st.showLive ? '小窓をかくす' : '小窓を出す';
     $c('camLiveBox').classList.toggle('hidden', !st.showLive);
     const flip = st.mirror ? 'scaleX(-1)' : 'none';
     view.style.transform = flip;
     $c('camVideo').style.transform = flip;
-    $c('camSwitchBtn').classList.toggle('hidden', st.devices.length < 2);$c('camFsBtn').classList.toggle('hidden', !document.fullscreenEnabled);
+    $c('camSwitchBtn').classList.toggle('hidden', st.devices.length < 2);
+    $c('camFsBtn').classList.toggle('hidden', !document.fullscreenEnabled);
     if (document.fullscreenEnabled) $c('camFsBtn').textContent = document.fullscreenElement ? '⛶ 全画面をやめる' : '⛶ 全画面';
     if (st.paused) updatePauseTag();
   }
@@ -335,7 +337,7 @@ const CAM = (() => {
       if (!st.paused) {
         if (st.repeating) {
           // 10秒くりかえし再生モード
-          if ($c('camMsg').dataset.k) { msg('');$c('camMsg').dataset.k = ''; }
+          if ($c('camMsg').dataset.k) { msg(''); $c('camMsg').dataset.k = ''; }
           const f = st.frames;
           if (f.length > 0 && st.rStartIdx >= 0 && st.rEndIdx >= st.rStartIdx) {
             const dur = Math.max(500, st.rDuration);
@@ -368,7 +370,7 @@ const CAM = (() => {
               $c('camMsg').dataset.k = 'cd' + remain + '-' + st.delay;
             }
           } else {
-            if ($c('camMsg').dataset.k) { msg('');$c('camMsg').dataset.k = ''; }
+            if ($c('camMsg').dataset.k) { msg(''); $c('camMsg').dataset.k = ''; }
             show(f[i]);
           }
         }
@@ -496,4 +498,72 @@ const CAM = (() => {
     } catch (e) { /* 使えない環境では何もしない */ }
   }
 
-  // 画面
+  // 画面が自動で暗くならないようにする（使えない環境では何もしない）
+  async function keepAwake() {
+    try {
+      if ('wakeLock' in navigator && !st.wakeLock) {
+        st.wakeLock = await navigator.wakeLock.request('screen');
+        st.wakeLock.addEventListener('release', () => { st.wakeLock = null; });
+      }
+    } catch (e) { st.wakeLock = null; }
+  }
+
+  function stopStream() {
+    st.running = false;
+    clearInterval(st.timer); st.timer = null;
+    cancelAnimationFrame(st.raf);
+    if (st.stream) st.stream.getTracks().forEach(t => t.stop());
+    st.stream = null;
+    st.encoding = false; st.decoding = false;
+    const v = $c('camVideo');
+    if (v) v.srcObject = null;
+  }
+
+  function open() {
+    els();
+    st.open = true;
+    $c('cam').classList.remove('hidden');
+    syncButtons();
+    start(st.deviceId || '');
+  }
+
+  function close() {
+    if (!st.open) return;
+    st.open = false;
+    stopStream();
+    st.frames = []; st.shown = null; st.want = null;
+    st.paused = false; st.pIdx = -1;
+    st.repeating = false; st.rStartIdx = -1; st.rEndIdx = -1;
+    msg('');
+    $c('camMsg').dataset.k = '';
+    try { if (document.fullscreenElement) document.exitFullscreen(); } catch (e) { /* 何もしない */ }
+    if (st.wakeLock) { st.wakeLock.release().catch(() => {}); st.wakeLock = null; }
+    $c('cam').classList.add('hidden');
+    if (typeof st.onClose === 'function') st.onClose();
+  }
+
+  function retry() { start(st.deviceId || ''); }
+
+  document.addEventListener('visibilitychange', () => {
+    if (st.open && document.visibilityState === 'visible') keepAwake();
+  });
+  document.addEventListener('fullscreenchange', () => { if (st.open) syncButtons(); });
+  document.addEventListener('keydown', ev => {
+    if (!st.open) return;
+    if (ev.key === 'Escape' && !document.fullscreenElement) { close(); }
+    else if (ev.key === ' ') { ev.preventDefault(); togglePause(); }
+    else if (ev.key === 'r' || ev.key === 'R') { ev.preventDefault(); toggleRepeat(); }
+    else if (ev.key === 'ArrowLeft') { ev.preventDefault(); step(ev.shiftKey ? -STEP_FRAMES : -1); }
+    else if (ev.key === 'ArrowRight') { ev.preventDefault(); step(ev.shiftKey ? STEP_FRAMES : 1); }
+  });
+
+  return {
+    open, close, retry, setDelay, togglePause, toggleRepeat, step, toggleMirror, toggleLive, switchCamera, toggleFullscreen,
+    set onClose(fn) { st.onClose = fn; },
+    _state: st
+  };
+})();
+
+</script>
+</body>
+</html>
